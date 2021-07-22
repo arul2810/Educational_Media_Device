@@ -1,0 +1,212 @@
+
+#include "DE1SoC_WM8731/DE1SoC_WM8731.h"
+#include "HPS_Watchdog/HPS_Watchdog.h"
+#include "DE1SoC_LT24/DE1SoC_LT24.h"
+#include "HPS_usleep/HPS_usleep.h"
+#include "Images/image.h"
+#include "FatFS/ff.h"
+#include <stdbool.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <math.h>
+#include <stdint.h>
+
+void exitOnFail(signed int status, signed int successStatus){
+
+	if(status != successStatus){
+		exit((int)status);
+	}
+}
+
+typedef struct {
+
+	uint8_t id[4]; 			/** should always contain "RIFF"      */
+	uint32_t totallength;	/** total file length minus 8         */
+	uint8_t wavefmt[8];  	/** should be "WAVEfmt "              */
+	uint32_t format; 		/** Sample format. 16 for PCM format. */
+	uint16_t pcm; 			/** 1 for PCM format                  */
+	uint16_t channels; 			/** Channels                          */
+	uint32_t frequency; 		/** sampling frequency                */
+	uint32_t bytes_per_second; 		/** Bytes per second                  */
+	uint16_t bytes_per_capture; 		/** Bytes per capture                 */
+	uint16_t bits_per_sample;		/** Bits per sample                   */
+	uint8_t data[4];				 /** should always contain "data"      */
+	uint32_t bytes_in_data; 		/** No. bytes in data                 */
+} WAV_Header_TypeDef;
+
+int main ()
+{
+
+	FATFS *fs; // Pointer that shows File system object
+	FIL *fp;
+	FILINFO fno;
+	FRESULT fr;
+
+    exitOnFail(
+            LT24_initialise(0xFF200060,0xFF200080), //Initialise LCD
+            LT24_SUCCESS);                          //Exit if not successful
+    HPS_ResetWatchdog();
+
+	volatile unsigned char* fifospace_ptr;
+	volatile unsigned int* audio_right_ptr;
+	volatile unsigned int* audio_left_ptr;
+	volatile unsigned int* LED_ptr = (unsigned int *) 0xFF200000;
+
+	unsigned int volume =100000;
+
+	fs = malloc ( sizeof (FATFS) );
+
+	WAV_Header_TypeDef wavHeader;
+
+	fr = f_mount ( fs , "" , 0);
+
+	switch(fr){
+
+	case FR_OK:
+		printf ("Mount success \n");
+	break;
+	default:
+		printf("error");
+
+	}
+
+	fp = malloc ( sizeof (FIL));
+
+	fr = f_open ( fp ,"intro.wav", FA_READ);
+
+	switch (fr) {
+	    case FR_OK:
+	    	printf("open success \n");
+	    	break;
+	    case FR_NO_FILE:
+	    	printf("NO file \n");
+	    	break;
+	    case FR_DISK_ERR:
+	    	printf("diskerror \n");
+	    	break;
+	    case FR_INT_ERR:
+	    	printf("INT ERROR \n");
+	    	break;
+	    case FR_NOT_READY:
+	    	printf("FR NOT READY \n");
+	    	break;
+	    case FR_NO_PATH:
+	    	printf("No path \n");
+	    	break;
+	    case FR_DENIED:
+	    	printf("fr denied \n");
+	    	break;
+	    case FR_EXIST:
+	    	printf(" FR Exist \n");
+	    	break;
+	    case FR_INVALID_OBJECT:
+	    	printf("FR invalid Object \n");
+	    	break;
+	    case FR_WRITE_PROTECTED:
+	    	printf("write protect \n");
+	    	break;
+	    case FR_INVALID_DRIVE:
+	    	printf("invalid drive \n");
+	    	break;
+	    case FR_TOO_MANY_OPEN_FILES:
+	    	printf("too many open \n");
+	    	break;
+	    case FR_INVALID_NAME:
+	    	printf("invalid name \n");
+	    	break;
+	    case FR_NOT_ENABLED:
+	    	printf("fr not enabled \n");
+	    	break;
+	    case FR_NO_FILESYSTEM:
+	    	printf("no file system \n");
+	    	break;
+	    case FR_TIMEOUT:
+	    	printf("fr time out \n");
+	    	break;
+	    case FR_NOT_ENOUGH_CORE:
+	    	printf("core error \n");
+	    	break;
+	    default:
+	    	printf("read failure \n");
+	}
+
+	unsigned int file_size;
+
+	file_size = f_size (fp);
+
+	printf("%u \n", file_size);
+
+	unsigned int read_size;
+
+
+
+	fr = f_read (fp, &wavHeader, sizeof(wavHeader), &read_size);
+
+
+	printf("Read the file \n");
+
+
+	printf("Printing File Information Data \n");
+
+	// FILE INFORMAITON PRINT
+
+	printf("Frequency: %u \n", wavHeader.frequency);
+	printf("Bits per Sample : %u \n", wavHeader.bits_per_sample);\
+	printf("Bytes in Data : %u \n",wavHeader.bytes_in_data);
+
+
+	file_size = (file_size - sizeof(wavHeader));
+
+	//sample_buffer = (int16_t*) malloc(sizeof(int16_t) * file_size);
+
+
+
+	//fr = f_read(fp, sample_buffer, file_size , &bytes_read);
+
+	exitOnFail ( WM8731_initialise(0xFF203040) , WM8731_SUCCESS );
+
+	WM8731_clearFIFO (true, true) ;
+
+	fifospace_ptr = WM8731_getFIFOSpacePtr();
+	audio_left_ptr = WM8731_getLeftFIFOPtr();
+	audio_right_ptr = WM8731_getRightFIFOPtr();
+
+	// load first 512 bytes to buffer
+	unsigned int bytes_read = 0;
+	int16_t *buffer;
+	buffer = (int16_t *)malloc(sizeof(int16_t)*file_size);
+	unsigned int sample_pt = 0;
+	HPS_ResetWatchdog();
+	f_read(fp, buffer, file_size, &read_size);
+
+	sample_pt = 0;
+	printf ( "%d \n", read_size);
+
+
+    exitOnFail (
+    		LT24_copyFrameBuffer (anime1,0,0,240,240),
+			LT24_SUCCESS);
+
+
+    int iter = 0;
+	while (1){
+
+		if  (sample_pt < (read_size/2)){
+			if ((fifospace_ptr[2] > 0) && (fifospace_ptr[3] > 0)) {
+				*audio_left_ptr = buffer[sample_pt] * volume;
+				*audio_right_ptr = buffer[sample_pt+1] * volume;
+				sample_pt = sample_pt + 2;
+			}
+			*LED_ptr = fifospace_ptr[2];
+			HPS_ResetWatchdog();
+		}
+		else {
+			sample_pt = 0;
+
+		}
+	}
+	HPS_ResetWatchdog();
+	//free ( fs );
+	printf("Complete ! \n");
+}
+
